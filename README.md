@@ -26,25 +26,25 @@ Template and pattern for merchant/seller engineering teams to:
 ```mermaid
 flowchart TB
     %% Experience layer
-    subgraph EXPERIENCE["🎨 Experience"]
+    subgraph EXPERIENCE["Experience"]
         UI["Next.js UI<br/>:3000"]
     end
 
     %% Agent runtime
-    subgraph AGENTS["🤖 Agent"]
+    subgraph AGENTS["Agent"]
         AGENT["Agent Service<br/>:8003"]
         MEM["mem0"]
         AGENT --- MEM
     end
 
     %% ACP services
-    subgraph ACP["📦 ACP Services"]
+    subgraph ACP["ACP Services"]
         SELLER["Seller<br/>:8001"]
         PSP["PSP<br/>:8002"]
     end
 
     %% Platform
-    subgraph PLATFORM["🗄️ Platform"]
+    subgraph PLATFORM["Platform"]
         DB[("PostgreSQL")]
         TEMPORAL["Temporal"]
         WORKER["Worker"]
@@ -133,115 +133,24 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    CSV[CSV Source] --> Workflow[Temporal<br/>Workflow]
+    subgraph SOURCES["Data Sources"]
+        CSV[CSV Files]
+        PG[PostgreSQL CDC]
+        API[REST API]
+        OTHER[Other Connectors]
+    end
+
+    CSV --> Workflow[Temporal<br/>Workflow]
+    PG -.-> Workflow
+    API -.-> Workflow
+    OTHER -.-> Workflow
+
     Workflow --> Parse[Parse]
     Parse --> Transform[Transform]
     Transform --> QC{Quality<br/>Check}
     QC -->|Pass| DB[(Database)]
     QC -->|Fail| Reject[Reject]
     DB --> Stats[Stats API]
-```
-
-### Database Schema & Relationships
-
-```mermaid
-erDiagram
-    PRODUCTS ||--o{ LINE_ITEMS : contains
-    CHECKOUT_SESSIONS ||--o{ LINE_ITEMS : has
-    CHECKOUT_SESSIONS ||--o| ORDERS : creates
-    CHECKOUT_SESSIONS ||--o{ ACP_ACTION_EVENTS : tracks
-    INGESTION_RUNS ||--o{ PRODUCTS : loads
-    SOURCE_CONNECTIONS ||--o{ SOURCE_CHECKPOINTS : maintains
-
-    PRODUCTS {
-        string id PK "Product SKU"
-        string name "Product name"
-        text description
-        string category
-        int price_cents "Price in cents"
-        string currency "ISO 4217"
-        string image_url
-        bool in_stock
-        jsonb attributes "Ratings, features, specs"
-        text search_vector "FTS index"
-        timestamp created_at
-    }
-
-    CHECKOUT_SESSIONS {
-        string id PK "cs_xxxxxx"
-        string status "not_ready|ready|completed|canceled"
-        jsonb buyer "Name, email, phone"
-        jsonb items "Array of {id, quantity}"
-        jsonb fulfillment_address "Shipping address"
-        string fulfillment_option_id FK
-        jsonb session_data "Full ACP response"
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    ORDERS {
-        string id PK "order_xxxxxx"
-        string checkout_session_id FK
-        string payment_token "PSP vault token"
-        int total_cents
-        string currency
-        string status "created|confirmed|shipped|fulfilled"
-        jsonb order_data "Payment provider, metadata"
-        timestamp created_at
-    }
-
-    ACP_ACTION_EVENTS {
-        string id PK "act_xxxxxx"
-        string session_id "Checkout or search session"
-        string actor_type "agent|user|system"
-        string actor_id
-        string intent_type "search|compare|purchase"
-        string idempotency_key
-        string status "succeeded|failed|rejected"
-        jsonb event_data "Intent, action, verification, execution"
-        timestamp created_at
-    }
-
-    INGESTION_RUNS {
-        string id PK "run_xxxxxx"
-        string source "csv|postgres_cdc|api"
-        int total_rows
-        int valid_rows
-        int skipped_rows
-        int loaded_rows
-        string status "succeeded|failed"
-        text error_message
-        jsonb run_data "Detailed stats"
-        timestamp created_at
-    }
-
-    SOURCE_CONNECTIONS {
-        string id PK
-        string tenant_id
-        string source_type "csv|postgres_cdc"
-        string status "active|paused|failed"
-        jsonb source_config "Connection details"
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    SOURCE_CHECKPOINTS {
-        string source_id PK FK
-        string cursor "CDC position"
-        string last_event_at
-        jsonb checkpoint_data "Metadata"
-        timestamp updated_at
-    }
-
-    LINE_ITEMS {
-        string checkout_session_id FK
-        string product_id FK
-        int quantity
-        int base_amount
-        int discount
-        int tax
-        int total
-    }
 ```
 
 ### Key Metrics & Scale
