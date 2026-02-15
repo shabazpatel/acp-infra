@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: acp
+      POSTGRES_PASSWORD: acp
+      POSTGRES_DB: acp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"   # gRPC
+      - "8233:8233"   # Web UI
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=acp
+      - POSTGRES_PWD=acp
+      - POSTGRES_SEEDS=postgres      
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

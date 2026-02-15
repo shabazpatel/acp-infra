@@ -1,0 +1,59 @@
+# Unified Railway Template (ACP Infra)
+#
+# This is a single source-of-truth template for all Railway services.
+# Railway itself deploys each service independently, so apply the relevant
+# section to each Railway service config/start command + variables UI.
+
+project:
+  name: acp-infra
+  services:
+    - seller
+    - psp
+    - agent
+    - pipeline-worker
+
+shared_env:
+  DATABASE_URL: postgresql+asyncpg://<user>:<password>@<host>:<port>/<db>
+  TEMPORAL_HOST: <temporal-host>:7233
+  TEMPORAL_NAMESPACE: default
+  TEMPORAL_TASK_QUEUE: acp-pipeline
+
+service_configs:
+  seller:
+    start_command: bash deployment/railway/start-seller.sh
+    healthcheck_path: /health
+    env:
+      WANDS_DATA_DIR: services/seller/wayfair_data
+      INGEST_MIN_VALID_RATIO: "0.0"
+      INGEST_MAX_SKIPPED_ROWS: "5000"
+      ACP_AUTO_INGEST_ON_STARTUP: "false"
+
+  psp:
+    start_command: bash deployment/railway/start-psp.sh
+    healthcheck_path: /health
+    env:
+      STRIPE_API_KEY: ""
+
+  agent:
+    start_command: bash deployment/railway/start-agent.sh
+    healthcheck_path: /health
+    env:
+      OPENAI_API_KEY: sk-...
+      SELLER_SERVICE_URL: http://<seller-internal-url>
+      PSP_SERVICE_URL: http://<psp-internal-url>
+      MEM0_API_KEY: ""
+
+  pipeline-worker:
+    start_command: bash deployment/railway/start-worker.sh
+    healthcheck_path: null
+    env: {}
+
+post_deploy_checks:
+  - service: seller
+    request: POST /admin/ingest/product-csv
+  - service: seller
+    request: GET /admin/ingest/stats
+  - service: seller
+    request: GET /products/search?q=chair&limit=3
+  - service: agent
+    request: POST /chat
