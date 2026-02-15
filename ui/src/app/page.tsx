@@ -56,6 +56,18 @@ export default function Home() {
     const [checkout, setCheckout] = useState<CheckoutData | null>(null);
     const [acpContracts, setAcpContracts] = useState<ACPContract[]>([]);
     const [showContracts, setShowContracts] = useState(true);
+    const [userId] = useState(() => {
+        if (typeof window !== 'undefined') {
+            let id = localStorage.getItem('acp_user_id');
+            if (!id) {
+                id = `user_${Math.random().toString(36).substring(2, 11)}`;
+                localStorage.setItem('acp_user_id', id);
+            }
+            return id;
+        }
+        return 'user_default';
+    });
+    const [sessionId] = useState(() => `session_${Math.random().toString(36).substring(2, 11)}`);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -85,7 +97,11 @@ export default function Home() {
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: userMessage }),
+                body: JSON.stringify({
+                    message: userMessage,
+                    user_id: userId,
+                    session_id: sessionId
+                }),
             });
 
             if (!res.ok) throw new Error('Chat request failed');

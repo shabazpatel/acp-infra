@@ -43,6 +43,7 @@ def create_commerce_tools(
     headers = {
         "Authorization": f"Bearer {auth_token}",
         "Content-Type": "application/json",
+        "API-Version": "2026-01-30",
     }
 
     def _validate_json_response(model_cls, data: dict):
@@ -160,15 +161,17 @@ def create_commerce_tools(
         payload: dict = {
             "items": [{"id": product_id, "quantity": quantity}],
         }
-        if buyer_first_name:
+        # Only include buyer if all required buyer fields are non-empty
+        if buyer_first_name and buyer_last_name and buyer_email:
             payload["buyer"] = {
                 "first_name": buyer_first_name,
                 "last_name": buyer_last_name,
                 "email": buyer_email,
             }
-        if address_line_one:
+        # Only include fulfillment_address if all required address fields are non-empty
+        if address_line_one and address_city and address_state and address_postal_code:
             payload["fulfillment_address"] = {
-                "name": f"{buyer_first_name} {buyer_last_name}",
+                "name": f"{buyer_first_name} {buyer_last_name}" if buyer_first_name else "Customer",
                 "line_one": address_line_one,
                 "city": address_city,
                 "state": address_state,

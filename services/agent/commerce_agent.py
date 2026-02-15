@@ -22,39 +22,49 @@ PSP_URL = os.getenv("PSP_SERVICE_URL", "http://localhost:8002")
 
 COMMERCE_AGENT_INSTRUCTIONS = """You are a helpful shopping assistant that helps customers find and purchase products.
 
-You have access to a product catalog and can help with the entire purchase flow.
-
 **Product Discovery**:
-- Search for products based on customer descriptions
-- Show product listings with: Name, ID, Price, Rating, Description
-- Format each product consistently for easy scanning
+- Use `search_products` to find products
+- Show: Name, ID, Price, Rating, Description
+- Always show prices in dollars: cents ÷ 100 (e.g., 41116 cents = $411.16)
 
-**Checkout Flow** (when customer wants to buy):
-1. If you have: product ID, customer name, email, and full shipping address → call `create_checkout` immediately
-2. If missing info → ask for what's needed (first name, last name, email, full address with street, city, state, postal code)
-3. After checkout created → show fulfillment options and ask which shipping method
-4. After fulfillment selected → use `update_checkout` with fulfillment_option_id
-5. When ready → use `complete_checkout` with payment token "mock_token"
+**Checkout Flow**:
+When customer wants to buy a product:
 
-**Important Guidelines**:
-- Always show prices in dollars (divide cents by 100). Example: 2999 cents = $29.99
-- Include product ID in every product mention so customers can reference it
-- When customer says "buy product X" or "get product X", extract:
-  * Product ID (from their message or conversation history)
-  * Customer info (name, email, address from their message or memory)
-  * Then immediately call `create_checkout` - don't ask again for info they already gave
-- Use conversation memory to remember:
-  * Customer name and contact details
-  * Their address if they provided it
-  * Products they showed interest in
-  * Their preferences and past interactions
-- Be proactive: if customer gave you all info, create the checkout immediately
-- Guide step-by-step but don't be repetitive - move forward when you have the data
+1. **Extract information** from the conversation:
+   - Product ID (required)
+   - First name, Last name, Email
+   - Street address, City, State (2-letter code), Postal code
+   - Quantity (default: 1)
+   - Country (default: "US")
 
-**Memory Usage**:
-- Check memories at the start of each conversation
-- Remember: customer preferences, past purchases, shipping address, contact info
-- Use this context to provide personalized, efficient service
+2. **Call create_checkout immediately** if you have the required info:
+   ```
+   create_checkout(
+     product_id="34507",
+     quantity=1,
+     buyer_first_name="Shabaz",
+     buyer_last_name="Patel",
+     buyer_email="shabaz@gmail.com",
+     address_line_one="123 Mission St",
+     address_city="San Francisco",
+     address_state="CA",
+     address_country="US",
+     address_postal_code="92341"
+   )
+   ```
+
+3. **Show shipping options** from the checkout response, ask customer to select one
+
+4. **Update checkout** with selected shipping: `update_checkout(session_id, fulfillment_option_id)`
+
+5. **Complete checkout**: `complete_checkout(session_id)` with payment token
+
+**Important Rules**:
+- Call create_checkout as soon as you have buyer and address information
+- Extract names/email/address from the current message or conversation history
+- Only ask for missing information - don't ask for info the customer already provided
+- Pass ALL parameters to create_checkout that you have available
+- Default quantity=1 and country="US" if not specified
 """
 
 
@@ -74,23 +84,21 @@ def create_commerce_agent() -> Agent:
     return agent
 
 
-# ── mem0 integration ─────────────────────────────────────────────────────
+# ── Memory integration ─────────────────────────────────────────────────────
+
+# Simple in-memory store (for demo - use Redis/DB for production)
+_conversation_memory: dict[str, list[dict]] = {}
 
 def get_memory_client():
     """Get a mem0 client for persistent memory (optional)."""
-    # Temporarily disabled - mem0 API requires valid subscription
-    # Agent will still work, just without cross-session memory
-    # To re-enable: get valid API key from mem0.ai and uncomment below
+    try:
+        from mem0 import MemoryClient
+        api_key = os.getenv("MEM0_API_KEY", "")
+        if api_key:
+            return MemoryClient(api_key=api_key)
+    except Exception:
+        pass
     return None
-
-    # try:
-    #     from mem0 import MemoryClient
-    #     api_key = os.getenv("MEM0_API_KEY", "")
-    #     if api_key:
-    #         return MemoryClient(api_key=api_key)
-    # except ImportError:
-    #     pass
-    # return None
 
 
 async def run_agent_with_memory(
@@ -107,24 +115,38 @@ async def run_agent_with_memory(
     agent = create_commerce_agent()
     memory = get_memory_client()
 
-    # Build context with memories (limit to 3 for speed)
+    # Build context from conversation history
     context_parts = []
+    conversation_key = f"{user_id}:{session_id}" if session_id else user_id
+
+    # Try mem0 first, fall back to in-memory
     if memory:
         try:
-            memories = memory.search(user_message, user_id=user_id, limit=3)
-            if memories:
-                memory_text = "\n".join(
-                    f"- {m.get('memory', '')}" for m in memories[:3] if m.get("memory")
-                )
-                if memory_text:
-                    context_parts.append(
-                        f"Previous context:\n{memory_text}"
-                    )
-        except Exception as e:
-            # mem0 is optional, silently fail
+            # Search with both user_id AND session_id for better context
+            memories = memory.search(
+                query=user_message,
+                user_id=user_id,
+                session_id=session_id,
+                limit=5
+            )
+            if memories and isinstance(memories, list):
+                # mem0 returns list of dicts with 'memory' key
+                memory_texts = [m.get('memory') for m in memories if m.get('memory')]
+                if memory_texts:
+                    context_parts.append(f"Previous context:\n" + "\n".join(f"- {m}" for m in memory_texts))
+        except Exception:
             pass
 
-    # Build the input
+    # Fallback: use in-memory conversation history
+    if not context_parts and conversation_key in _conversation_memory:
+        recent = _conversation_memory[conversation_key][-6:]  # Last 3 turns
+        if recent:
+            context_text = "\n".join(
+                f"{msg['role']}: {msg['content']}" for msg in recent
+            )
+            context_parts.append(f"Conversation history:\n{context_text}")
+
+    # Build the input with context
     full_input = user_message
     if context_parts:
         full_input = "\n\n".join(context_parts) + f"\n\nCustomer says: {user_message}"
@@ -133,18 +155,37 @@ async def run_agent_with_memory(
     result = await Runner.run(agent, input=full_input)
     response = result.final_output or "I'm sorry, I couldn't process that request."
 
-    # Store the interaction in memory (async, don't block response)
+    # Store in mem0 (correct format: list of strings with context)
     if memory:
         try:
-            # Fire and forget - don't await to speed up response
-            memory.add(
-                [
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": response},
-                ],
-                user_id=user_id,
-            )
+            # Extract key facts from the conversation for mem0
+            facts = []
+
+            # Check for customer info
+            if "name is" in user_message.lower() or "i'm" in user_message.lower():
+                facts.append(user_message)
+            if "email" in user_message.lower() and "@" in user_message:
+                facts.append(user_message)
+            if "address" in user_message.lower() or "ship to" in user_message.lower():
+                facts.append(user_message)
+
+            # Always store user message if it contains key info
+            if facts:
+                memory.add(
+                    facts,  # List of strings, not dicts
+                    user_id=user_id,
+                    session_id=session_id
+                )
         except Exception:
             pass
+
+    # Always store in in-memory fallback
+    if conversation_key not in _conversation_memory:
+        _conversation_memory[conversation_key] = []
+    _conversation_memory[conversation_key].append({"role": "user", "content": user_message})
+    _conversation_memory[conversation_key].append({"role": "assistant", "content": response})
+    # Keep only last 20 messages (10 turns)
+    if len(_conversation_memory[conversation_key]) > 20:
+        _conversation_memory[conversation_key] = _conversation_memory[conversation_key][-20:]
 
     return response
