@@ -1,13 +1,8 @@
 [phases.setup]
-nixPkgs = ["python312", "postgresql"]
+nixPkgs = ["python312", "uv"]
 
 [phases.install]
-cmds = [
-  "python -m ensurepip",
-  "python -m pip install --upgrade pip",
-  "pip install uv",
-  "uv sync"
-]
+cmds = ["uv sync --frozen"]
 
 [start]
-cmd = "uvicorn services.seller.main:app --host 0.0.0.0 --port $PORT"
+cmd = "uv run uvicorn services.seller.main:app --host 0.0.0.0 --port $PORT"
