@@ -1,171 +1,423 @@
-# ACP Framework
+# ACP Infrastructure
 
-Python implementation of the [Agentic Commerce Protocol](https://www.agenticcommerce.dev/docs).
+Reference implementation of the Agentic Commerce Protocol (ACP) for end-to-end
+agentic shopping flows.
 
-## What it does
+## Project goal
 
-Provides reusable components for merchants to integrate with AI shopping agents:
+Template and pattern for merchant/seller engineering teams to:
 
-- **acp_framework/** - Core protocol models and adapters
-- **services/seller/** - Reference checkout API implementation
-- **services/agent/** - OpenAI Agents SDK wrapper with commerce tools
-- **services/psp/** - Delegate payment mock (Stripe-compatible)
-- **services/pipeline/** - Temporal workflows for catalog ingestion
+1. Integrate ACP into their commerce stack using proven service patterns
+2. Deploy ACP-compatible seller and payment services
+3. Connect those services to various agent experiences (including the demo agent/UI in this repo)
 
-## Quick start
+## What this system provides
+
+- ACP Checkout API implementation (seller service)
+- Delegate Payment API implementation (PSP service)
+- Tool-using commerce agent (OpenAI Agents SDK)
+- Durable catalog ingestion via Temporal workflows
+- Shared ACP domain models and adapter abstractions (`acp_framework/`)
+
+## Architecture at a glance
+
+### System Architecture
+
+```mermaid
+flowchart TB
+    %% Experience layer
+    subgraph EXPERIENCE["🎨 Experience"]
+        UI["Next.js UI<br/>:3000"]
+    end
+
+    %% Agent runtime
+    subgraph AGENTS["🤖 Agent"]
+        AGENT["Agent Service<br/>:8003"]
+        MEM["mem0"]
+        AGENT --- MEM
+    end
+
+    %% ACP services
+    subgraph ACP["📦 ACP Services"]
+        SELLER["Seller<br/>:8001"]
+        PSP["PSP<br/>:8002"]
+    end
+
+    %% Platform
+    subgraph PLATFORM["🗄️ Platform"]
+        DB[("PostgreSQL")]
+        TEMPORAL["Temporal"]
+        WORKER["Worker"]
+    end
+
+    %% Framework
+    FRAMEWORK["acp_framework<br/>(shared models)"]
+
+    %% Connections
+    UI --> AGENT
+    AGENT --> SELLER
+    AGENT --> PSP
+    SELLER --> DB
+    WORKER --> DB
+    SELLER --> TEMPORAL
+    TEMPORAL --> WORKER
+
+    FRAMEWORK -.-> AGENT
+    FRAMEWORK -.-> SELLER
+    FRAMEWORK -.-> PSP
+
+    %% Styling
+    classDef experience fill:#e1f5ff,stroke:#0077b6,stroke-width:2px
+    classDef agent fill:#fff3cd,stroke:#ffc107,stroke-width:2px
+    classDef acp fill:#d1e7dd,stroke:#198754,stroke-width:2px
+    classDef platform fill:#f8d7da,stroke:#dc3545,stroke-width:2px
+    classDef framework fill:#e7e7e7,stroke:#6c757d,stroke-width:2px
+
+    class UI experience
+    class AGENT,MEM agent
+    class SELLER,PSP acp
+    class DB,TEMPORAL,WORKER platform
+    class FRAMEWORK framework
+```
+
+### Data Flow: Purchase Journey
+
+```mermaid
+sequenceDiagram
+    participant UI as UI
+    participant Agent as Agent
+    participant Seller as Seller
+    participant PSP as PSP
+    participant DB as Database
+
+    %% Search
+    Note over UI,DB: 1. Search Products
+    UI->>Agent: "Show me sofas"
+    Agent->>Seller: GET /products/search
+    Seller->>DB: Query products
+    DB-->>Seller: Results
+    Seller-->>Agent: Products list
+    Agent-->>UI: Display cards
+
+    %% Create Checkout
+    Note over UI,DB: 2. Create Checkout
+    UI->>Agent: "Buy product 123"
+    Agent->>Seller: POST /checkout_sessions
+    Seller->>DB: Insert session
+    DB-->>Seller: Session created
+    Seller-->>Agent: Checkout session
+    Agent-->>UI: Show options
+
+    %% Select Shipping
+    Note over UI,DB: 3. Select Shipping
+    UI->>Agent: "Standard shipping"
+    Agent->>Seller: POST /checkout_sessions/:id
+    Seller->>DB: Update session
+    DB-->>Seller: Updated
+    Seller-->>Agent: Ready for payment
+    Agent-->>UI: Show total
+
+    %% Complete
+    Note over UI,DB: 4. Complete Order
+    UI->>Agent: "Complete purchase"
+    Agent->>PSP: POST /delegate_payment
+    PSP-->>Agent: Payment token
+    Agent->>Seller: POST /:id/complete
+    Seller->>DB: Create order
+    DB-->>Seller: Order ID
+    Seller-->>Agent: Order confirmed
+    Agent-->>UI: Success!
+```
+
+### Ingestion Pipeline
+
+```mermaid
+flowchart LR
+    CSV[CSV Source] --> Workflow[Temporal<br/>Workflow]
+    Workflow --> Parse[Parse]
+    Parse --> Transform[Transform]
+    Transform --> QC{Quality<br/>Check}
+    QC -->|Pass| DB[(Database)]
+    QC -->|Fail| Reject[Reject]
+    DB --> Stats[Stats API]
+```
+
+### Database Schema & Relationships
+
+```mermaid
+erDiagram
+    PRODUCTS ||--o{ LINE_ITEMS : contains
+    CHECKOUT_SESSIONS ||--o{ LINE_ITEMS : has
+    CHECKOUT_SESSIONS ||--o| ORDERS : creates
+    CHECKOUT_SESSIONS ||--o{ ACP_ACTION_EVENTS : tracks
+    INGESTION_RUNS ||--o{ PRODUCTS : loads
+    SOURCE_CONNECTIONS ||--o{ SOURCE_CHECKPOINTS : maintains
+
+    PRODUCTS {
+        string id PK "Product SKU"
+        string name "Product name"
+        text description
+        string category
+        int price_cents "Price in cents"
+        string currency "ISO 4217"
+        string image_url
+        bool in_stock
+        jsonb attributes "Ratings, features, specs"
+        text search_vector "FTS index"
+        timestamp created_at
+    }
+
+    CHECKOUT_SESSIONS {
+        string id PK "cs_xxxxxx"
+        string status "not_ready|ready|completed|canceled"
+        jsonb buyer "Name, email, phone"
+        jsonb items "Array of {id, quantity}"
+        jsonb fulfillment_address "Shipping address"
+        string fulfillment_option_id FK
+        jsonb session_data "Full ACP response"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    ORDERS {
+        string id PK "order_xxxxxx"
+        string checkout_session_id FK
+        string payment_token "PSP vault token"
+        int total_cents
+        string currency
+        string status "created|confirmed|shipped|fulfilled"
+        jsonb order_data "Payment provider, metadata"
+        timestamp created_at
+    }
+
+    ACP_ACTION_EVENTS {
+        string id PK "act_xxxxxx"
+        string session_id "Checkout or search session"
+        string actor_type "agent|user|system"
+        string actor_id
+        string intent_type "search|compare|purchase"
+        string idempotency_key
+        string status "succeeded|failed|rejected"
+        jsonb event_data "Intent, action, verification, execution"
+        timestamp created_at
+    }
+
+    INGESTION_RUNS {
+        string id PK "run_xxxxxx"
+        string source "csv|postgres_cdc|api"
+        int total_rows
+        int valid_rows
+        int skipped_rows
+        int loaded_rows
+        string status "succeeded|failed"
+        text error_message
+        jsonb run_data "Detailed stats"
+        timestamp created_at
+    }
+
+    SOURCE_CONNECTIONS {
+        string id PK
+        string tenant_id
+        string source_type "csv|postgres_cdc"
+        string status "active|paused|failed"
+        jsonb source_config "Connection details"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    SOURCE_CHECKPOINTS {
+        string source_id PK FK
+        string cursor "CDC position"
+        string last_event_at
+        jsonb checkpoint_data "Metadata"
+        timestamp updated_at
+    }
+
+    LINE_ITEMS {
+        string checkout_session_id FK
+        string product_id FK
+        int quantity
+        int base_amount
+        int discount
+        int tax
+        int total
+    }
+```
+
+### Key Metrics & Scale
+
+| Metric | Current | Notes |
+|--------|---------|-------|
+| **Products** | 42,994 | WANDS dataset (Wayfair) |
+| **Search Latency** | 50-100ms | PostgreSQL FTS with ranking |
+| **ACP Endpoints** | 5 | create, get, update, complete, cancel |
+| **Agent Tools** | 10 | search, details, rating, compare, simulate, checkout (5) |
+| **Supported Headers** | 7 | API-Version, Idempotency-Key, Request-Id, Authorization, X-OpenAI-Signature, Accept-Language, User-Agent |
+| **Test Coverage** | 15/15 | All ACP sandbox tests passing |
+| **Database Tables** | 7 | products, checkout_sessions, orders, acp_action_events, ingestion_runs, source_connections, source_checkpoints |
+| **Ingestion Quality** | 90%+ | Min valid ratio enforced |
+
+### Component responsibilities
+
+| Component | Path | Responsibility |
+|---|---|---|
+| **ACP framework** | `acp_framework/` | Shared ACP models (Pydantic), seller adapter contract (`ACPSellerAdapter`), payment provider primitives, router factory (`create_seller_router`), agent tools factory (`create_commerce_tools`) |
+| **Seller service** | `services/seller/main.py` | ACP checkout lifecycle (5 endpoints), product APIs (search, details, ratings, compare), ingestion trigger/admin endpoints, webhook emitter |
+| **PSP service** | `services/psp/main.py` | Delegate payment tokenization with API-version validation, idempotency enforcement, HMAC signature checks, mock or Stripe-backed |
+| **Agent service** | `services/agent/main.py` | Chat endpoint (`/chat`) over tool-enabled commerce agent (OpenAI Agents SDK), mem0 integration for cross-session memory |
+| **Pipeline worker** | `services/pipeline/worker.py` | Registers and runs Temporal workflows (CSV ingestion, source adapters) + activities (parse, transform, load) |
+| **UI** | `ui/` | Customer-facing Next.js chat interface with real-time checkout panel, product card rendering, API route proxying |
+
+## Request flow
+
+1. User sends a message in UI.
+2. Agent service resolves intent and calls seller/PSP tools.
+3. Seller service creates/updates/completes ACP checkout sessions.
+4. PSP service issues delegated payment tokens (mock or Stripe-backed).
+5. Seller persists sessions/orders and action events for traceability.
+
+## Local development
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- Docker Desktop (for PostgreSQL + Temporal)
+- `OPENAI_API_KEY`
+
+### Bootstrap
 
 ```bash
+git clone https://github.com/shabazpatel/acp-infra.git
+cd acp-infra
+chmod +x setup.sh
 ./setup.sh
+```
+
+`setup.sh` installs `uv`, creates `.venv`, installs dependencies, copies `.env`,
+and starts Docker dependencies when available.
+
+### Environment
+
+```bash
+cp .env.example .env
+```
+
+Minimum required variable:
+
+- `OPENAI_API_KEY`
+
+Optional integrations:
+
+- `MEM0_API_KEY` (agent memory)
+- `STRIPE_API_KEY` (real tokenization in PSP)
+- `ACP_OPENAI_SIGNATURE_SECRET` (request signature verification)
+
+### Run services
+
+Use separate terminals.
+
+```bash
+# Terminal 1
 source .venv/bin/activate
-
-# Start infrastructure
-docker compose up -d
-
-# Start services
-uvicorn services.seller.main:app --port 8001 &
-uvicorn services.psp.main:app --port 8002 &
-uvicorn services.agent.main:app --port 8003 &
-
-# Start UI (optional)
-cd ui && npm install && npm run dev
-```
-
-Requires `.env` with `OPENAI_API_KEY`.
-
-## For sellers
-
-### Option 1: Use the adapter
-
-```python
-from acp_framework.seller import ACPSellerAdapter, create_seller_router
-from acp_framework.models import CheckoutSession
-
-class MyAdapter(ACPSellerAdapter):
-    async def on_create_session(self, request):
-        # Your product lookup and pricing logic
-        return CheckoutSession(...)
-
-    async def on_complete_session(self, session_id, request):
-        # Your payment and order creation logic
-        return CheckoutSessionWithOrder(...)
-
-    # Implement other 3 methods: on_get_session, on_update_session, on_cancel_session
-
-app.include_router(create_seller_router(MyAdapter()))
-```
-
-Gets you:
-- ACP protocol compliance
-- Request validation (API-Version, signatures, idempotency)
-- HMAC verification
-- Automatic error responses
-
-### Option 2: Implement endpoints manually
-
-See `services/seller/main.py` for reference. Required endpoints:
-
-```
-POST   /checkout_sessions           Create session
-GET    /checkout_sessions/{id}      Get session
-POST   /checkout_sessions/{id}      Update session
-POST   /checkout_sessions/{id}/complete   Complete order
-POST   /checkout_sessions/{id}/cancel     Cancel session
-```
-
-All requests require:
-```
-Authorization: Bearer <token>
-API-Version: 2026-01-30
-Content-Type: application/json
-```
-
-## Data pipeline
-
-Product ingestion via Temporal workflows. Supports pluggable source adapters:
-
-```python
-# services/pipeline/sources.py
-
-class MySourceAdapter(SourceAdapter):
-    async def snapshot_rows(self) -> list[dict[str, str]]:
-        # Return list of dicts with keys:
-        # product_id, product_name, product_description,
-        # product_class, price_cents
-        pass
-```
-
-Register and trigger:
-
-```python
-def build_source_adapter(source_type: str, config: dict):
-    if source_type == "my_source":
-        return MySourceAdapter(config)
+python -m services.pipeline.worker
 ```
 
 ```bash
-curl -X POST http://localhost:8001/admin/ingest/source \
-  -H "Content-Type: application/json" \
-  -d '{"source_type":"my_source","source_config":{...}}'
+# Terminal 2
+source .venv/bin/activate
+uvicorn services.seller.main:app --reload --port 8001
 ```
 
-Monitor via `/admin/ingest/stats`.
+```bash
+# Terminal 3
+source .venv/bin/activate
+uvicorn services.psp.main:app --reload --port 8002
+```
+
+```bash
+# Terminal 4
+source .venv/bin/activate
+uvicorn services.agent.main:app --reload --port 8003
+```
+
+```bash
+# Terminal 5
+cd ui
+npm install
+npm run dev
+```
+
+Access UI at `http://localhost:3000`.
+
+## Operational endpoints
+
+### Health
+
+- Seller: `GET /health` on `:8001`
+- PSP: `GET /health` on `:8002`
+- Agent: `GET /health` on `:8003`
+
+### Seller service
+
+- `GET /products/search`
+- `GET /products/{product_id}`
+- `GET /ratings/{product_id}`
+- `POST /compare`
+- ACP checkout router endpoints (mounted via `create_seller_router`)
+- `POST /admin/ingest/product-csv`
+- `POST /admin/ingest/source`
+- `GET /admin/ingest/stats`
+
+### PSP service
+
+- `POST /agentic_commerce/delegate_payment`
+
+Behavioral guarantees include API version validation, optional HMAC verification,
+and idempotency replay semantics.
 
 ## Testing
 
+Run unit/integration tests:
+
 ```bash
-pytest                      # Unit tests
-./test_acp_sandbox.sh      # ACP certification (15 tests)
+source .venv/bin/activate
+pytest
 ```
 
-## Architecture
+Run ACP sandbox contract tests:
 
-```
-┌──────┐     ┌────────┐     ┌────────┐     ┌─────┐
-│  UI  │────▶│ Agent  │────▶│ Seller │────▶│ PSP │
-└──────┘     └────────┘     └────────┘     └─────┘
-               │  ▲             │
-               │  │             │
-               ▼  │             ▼
-            ┌──────────┐   ┌─────────┐
-            │   mem0   │   │Postgres │
-            └──────────┘   └─────────┘
-                               ▲
-                               │
-                          ┌──────────┐
-                          │ Temporal │
-                          │  Worker  │
-                          └──────────┘
+```bash
+./test_acp_sandbox.sh
 ```
 
-- **Agent**: GPT-4o-mini with 10 commerce tools, 2.4s avg response
-- **Seller**: FastAPI + Postgres, full-text search on 40k+ products
-- **PSP**: Mock delegate payment (Stripe API compatible)
-- **Pipeline**: Temporal for durable ETL
+## Extending for a merchant integration
+
+1. Implement an `ACPSellerAdapter` for your catalog, pricing, tax, fulfillment,
+   and order backends.
+2. Mount the adapter using `create_seller_router(...)`.
+3. Replace demo search/product endpoints with your catalog APIs.
+4. Wire webhook and audit sinks to your observability stack.
+5. Enforce production auth and secret management per your platform standards.
 
 ## Deployment
 
-Railway:
-```bash
-railway add --plugin postgresql
-railway add --template temporal
-railway variables set OPENAI_API_KEY=sk-...
-railway up
-```
+- Generic deployment guidance: `DEPLOY.md`
+- Railway-specific assets: `deployment/railway/`
 
-See `deployment/railway/README.md` for details.
+For Railway, review and align:
 
-## Docs
+- `railway.toml`
+- `Procfile`
+- `nixpacks.toml`
+- `deployment/railway/README.md`
 
-- `docs/architecture.md` - Detailed architecture
-- `deployment/railway/README.md` - Railway deployment
-- [ACP Spec](https://www.agenticcommerce.dev/docs/commerce/specs/checkout)
+## Repository references
 
-## Demo
-
-Includes Wayfair WANDS dataset (42,994 products) for testing. Auto-ingests on startup if `ACP_AUTO_INGEST_ON_STARTUP=true`.
-
-Visit http://localhost:3000 after starting services.
+- Architecture notes: `docs/architecture.md`
+- Docker topology: `docker-compose.yml`
+- Environment contract: `.env.example`
 
 ## License
 
-MIT
+MIT (declared in `pyproject.toml`).
