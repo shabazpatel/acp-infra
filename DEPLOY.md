@@ -1,74 +1,54 @@
 # Deploy to Railway
 
-## Prerequisites
+## Quick Start (Web Dashboard)
 
-1. Railway account at railway.app
-2. GitHub repo connected to Railway
-
-## Steps
-
-### 1. Create Railway project
+### 1. Push to GitHub
 
 ```bash
-railway login  # Opens browser
-railway init   # Creates new project
+git add .
+git commit -m "Deploy config"
+git push origin main
 ```
 
-### 2. Add PostgreSQL
+### 2. Railway Dashboard
 
-In Railway dashboard:
-- Click "New" → "Database" → "PostgreSQL"
-- Railway will set `DATABASE_URL` automatically
+Go to https://railway.app/dashboard
 
-### 3. Create 3 services
+- New Project → Deploy from GitHub repo
+- Select your repo
+- Railway detects `railway.toml` automatically
 
-**Service 1: Seller API**
-- Click "New Service"
-- Name: `seller`
-- Settings → Variables:
-  ```
-  OPENAI_API_KEY=sk-...
-  DATABASE_URL=${{Postgres.DATABASE_URL}}
-  TEMPORAL_HOST=localhost:7233
-  ACP_AUTO_INGEST_ON_STARTUP=true
-  ```
-- Settings → Deploy:
-  - Start Command: `uvicorn services.seller.main:app --host 0.0.0.0 --port $PORT`
-  - Health Check: `/health`
+### 3. Add PostgreSQL
 
-**Service 2: Agent API**
-- Click "New Service"
-- Name: `agent`
-- Variables:
-  ```
-  OPENAI_API_KEY=sk-...
-  SELLER_SERVICE_URL=${{seller.RAILWAY_PRIVATE_DOMAIN}}
-  PSP_SERVICE_URL=${{psp.RAILWAY_PRIVATE_DOMAIN}}
-  ```
-- Start: `uvicorn services.agent.main:app --host 0.0.0.0 --port $PORT`
+- Click "New" → Database → PostgreSQL
+- Railway sets `DATABASE_URL` automatically
 
-**Service 3: PSP**
-- Click "New Service"
-- Name: `psp`
-- Start: `uvicorn services.psp.main:app --host 0.0.0.0 --port $PORT`
+### 4. Configure Services
 
-### 4. Deploy
+Railway creates seller service. Add these variables:
 
-```bash
-railway up
+**Seller**:
+```
+OPENAI_API_KEY=sk-...
+DATABASE_URL=${{Postgres.DATABASE_URL}}
+TEMPORAL_HOST=localhost:7233
+ACP_AUTO_INGEST_ON_STARTUP=true
 ```
 
-Or push to GitHub (auto-deploys if connected).
+**Agent** (New → Empty Service → GitHub repo):
+```
+OPENAI_API_KEY=sk-...
+SELLER_SERVICE_URL=http://${{seller.RAILWAY_PRIVATE_DOMAIN}}
+PSP_SERVICE_URL=http://${{psp.RAILWAY_PRIVATE_DOMAIN}}
+```
+Start: `uvicorn services.agent.main:app --host 0.0.0.0 --port $PORT`
 
-### 5. Generate domain
+**PSP** (New → Empty Service → GitHub repo):
+Start: `uvicorn services.psp.main:app --host 0.0.0.0 --port $PORT`
 
-In Railway dashboard for each service:
-- Settings → Networking → Generate Domain
+### 5. Generate Domains
 
-You'll get URLs like:
-- `seller-production.up.railway.app`
-- `agent-production.up.railway.app`
-- `psp-production.up.railway.app`
+Settings → Networking → Generate Domain for each service
 
 ### 6. Test
 
@@ -76,19 +56,18 @@ You'll get URLs like:
 curl https://seller-production.up.railway.app/health
 ```
 
-## Config files
+## Troubleshooting CLI Timeouts
 
-- `railway.toml` - Railway configuration
-- `Procfile` - Process definitions (Heroku-style)
-- `nixpacks.toml` - Build configuration
+If `railway up` times out, use web dashboard (above) or:
 
-## Notes
+```bash
+railway up --detach  # Non-blocking deploy
+```
 
-- Use private networking between services (`RAILWAY_PRIVATE_DOMAIN`)
-- PostgreSQL included in Railway (not Temporal - use Temporal Cloud or self-host)
-- Free tier: 500 hours/month, sleeps after inactivity
-- Pro tier: Always-on, better resources
+Check deployment status in dashboard.
 
-## Troubleshooting
+## Files
 
-Check logs: `railway logs seller`
+- `railway.toml` - Config
+- `nixpacks.toml` - Build
+- `Procfile` - Process definitions
