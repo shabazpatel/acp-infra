@@ -1,10 +1,5 @@
 # ACP Infrastructure
 
-Reference implementation of the Agentic Commerce Protocol (ACP) for end-to-end
-agentic shopping flows.
-
-## Project goal
-
 Template and pattern for merchant/seller engineering teams to:
 
 1. Integrate ACP into their commerce stack using proven service patterns
@@ -26,156 +21,225 @@ Template and pattern for merchant/seller engineering teams to:
 ```mermaid
 flowchart TB
     %% Experience layer
-    subgraph EXPERIENCE["Experience"]
-        UI["Next.js UI<br/>:3000"]
+    subgraph EXPERIENCE["Experience Layer"]
+        direction TB
+        USER["Customer<br/>(Browser)"]
+        UI["Web UI<br/>Next.js<br/>Port 3000"]
+        USER -->|"HTTP<br/>Chat UI"| UI
     end
 
     %% Agent runtime
-    subgraph AGENTS["Agent"]
-        AGENT["Agent Service<br/>:8003"]
-        MEM["mem0"]
-        AGENT --- MEM
+    subgraph AGENTS["Agent Runtime"]
+        direction TB
+        AGENT["Commerce Agent<br/>FastAPI<br/>Port 8003"]
+        MEM["mem0<br/>(Optional)<br/>Memory Store"]
+        TOOLS["10 Commerce Tools<br/>search, compare,<br/>checkout, complete"]
+        AGENT -->|"Retrieve/Store<br/>Customer Context"| MEM
+        AGENT -->|"Function Calls"| TOOLS
     end
 
-    %% ACP services
+    %% ACP commerce services
     subgraph ACP["ACP Services"]
-        SELLER["Seller<br/>:8001"]
-        PSP["PSP<br/>:8002"]
+        direction TB
+        SELLER["Seller Service<br/>FastAPI<br/>Port 8001<br/><br/>5 ACP Endpoints<br/>Product Search<br/>42K+ Products"]
+        PSP["PSP Service<br/>FastAPI<br/>Port 8002<br/><br/>Delegate Payment<br/>Token Management"]
+        SELLER <-->|"Payment<br/>Validation"| PSP
     end
 
-    %% Platform
-    subgraph PLATFORM["Platform"]
-        DB[("PostgreSQL")]
-        TEMPORAL["Temporal"]
-        WORKER["Worker"]
+    %% Platform/data plane
+    subgraph PLATFORM["Data & Orchestration"]
+        direction TB
+        DB[("PostgreSQL<br/><br/>products (42,994)<br/>checkout_sessions<br/>orders<br/>acp_action_events<br/>ingestion_runs")]
+        TEMPORAL["Temporal Server<br/>Port 7233<br/><br/>Workflow Engine"]
+        WORKER["Temporal Worker<br/><br/>ETL Workflows:<br/>CSV Ingestion<br/>Source Adapters<br/>Data Transform"]
     end
 
     %% Framework
-    FRAMEWORK["acp_framework<br/>(shared models)"]
+    FRAMEWORK["acp_framework/<br/><br/>Shared Python Package:<br/>Pydantic Models (ACP Spec)<br/>ACPSellerAdapter (Abstract)<br/>create_seller_router()<br/>create_commerce_tools()"]
 
     %% Connections
-    UI --> AGENT
-    AGENT --> SELLER
-    AGENT --> PSP
-    SELLER --> DB
-    WORKER --> DB
-    SELLER --> TEMPORAL
-    TEMPORAL --> WORKER
+    UI -->|"POST /chat<br/>JSON"| AGENT
+    TOOLS -->|"ACP Checkout API<br/>(create, update, complete)"| SELLER
+    TOOLS -->|"Delegate Payment API<br/>(tokenize)"| PSP
+    SELLER -->|"Read/Write<br/>SQL"| DB
+    WORKER -->|"Bulk Insert<br/>Products"| DB
+    SELLER -->|"Trigger<br/>Workflows"| TEMPORAL
+    TEMPORAL -->|"Task Queue<br/>(acp-pipeline)"| WORKER
 
-    FRAMEWORK -.-> AGENT
-    FRAMEWORK -.-> SELLER
-    FRAMEWORK -.-> PSP
+    %% Framework usage
+    FRAMEWORK -.->|"Import<br/>Models"| AGENT
+    FRAMEWORK -.->|"Extend<br/>Adapter"| SELLER
+    FRAMEWORK -.->|"Use<br/>Provider"| PSP
 
     %% Styling
-    classDef experience fill:#e1f5ff,stroke:#0077b6,stroke-width:2px
-    classDef agent fill:#fff3cd,stroke:#ffc107,stroke-width:2px
-    classDef acp fill:#d1e7dd,stroke:#198754,stroke-width:2px
-    classDef platform fill:#f8d7da,stroke:#dc3545,stroke-width:2px
-    classDef framework fill:#e7e7e7,stroke:#6c757d,stroke-width:2px
+    classDef experience fill:#e1f5ff,stroke:#0077b6,stroke-width:2px,color:#000
+    classDef agent fill:#fff3cd,stroke:#ffc107,stroke-width:2px,color:#000
+    classDef acp fill:#d1e7dd,stroke:#198754,stroke-width:2px,color:#000
+    classDef platform fill:#f8d7da,stroke:#dc3545,stroke-width:2px,color:#000
+    classDef framework fill:#e7e7e7,stroke:#6c757d,stroke-width:2px,color:#000
 
-    class UI experience
-    class AGENT,MEM agent
+    class USER,UI experience
+    class AGENT,MEM,TOOLS agent
     class SELLER,PSP acp
     class DB,TEMPORAL,WORKER platform
     class FRAMEWORK framework
 ```
 
-### Data Flow: Purchase Journey
+### Data Flow: End-to-End Purchase
 
 ```mermaid
 sequenceDiagram
-    participant UI as UI
-    participant Agent as Agent
-    participant Seller as Seller
-    participant PSP as PSP
-    participant DB as Database
+    participant U as Customer
+    participant UI as UI (Next.js)
+    participant A as Agent Service
+    participant M as mem0
+    participant S as Seller Service
+    participant P as PSP Service
+    participant DB as PostgreSQL
 
-    %% Search
-    Note over UI,DB: 1. Search Products
-    UI->>Agent: "Show me sofas"
-    Agent->>Seller: GET /products/search
-    Seller->>DB: Query products
-    DB-->>Seller: Results
-    Seller-->>Agent: Products list
-    Agent-->>UI: Display cards
+    %% 1. Product Search
+    rect rgb(240, 248, 255)
+        Note over U,DB: Phase 1: Product Discovery
+        U->>UI: "Show me sofas under $500"
+        UI->>A: POST /chat {message}
+        A->>M: Search memories for user
+        M-->>A: User preferences (optional)
+        A->>S: GET /products/search?q=sofa&price_max=50000
+        S->>DB: SELECT * FROM products WHERE...
+        DB-->>S: [product rows]
+        S-->>A: {products: [...], total_count: 156}
+        A-->>UI: Product listing (5 items)
+        UI-->>U: Display product cards
+    end
 
-    %% Create Checkout
-    Note over UI,DB: 2. Create Checkout
-    UI->>Agent: "Buy product 123"
-    Agent->>Seller: POST /checkout_sessions
-    Seller->>DB: Insert session
-    DB-->>Seller: Session created
-    Seller-->>Agent: Checkout session
-    Agent-->>UI: Show options
+    %% 2. Create Checkout
+    rect rgb(240, 255, 240)
+        Note over U,DB: Phase 2: Checkout Creation
+        U->>UI: "Buy product 1549, ship to 123 Main St..."
+        UI->>A: POST /chat {message}
+        A->>M: Store customer info
+        M-->>A: OK
+        A->>S: POST /checkout_sessions<br/>{items: [{id: "1549", quantity: 1}],<br/>buyer: {...}, address: {...}}
+        S->>DB: INSERT INTO checkout_sessions
+        S->>DB: SELECT * FROM products WHERE id="1549"
+        DB-->>S: Product details
+        S->>DB: Calculate totals, tax
+        DB-->>S: Session created
+        S-->>A: {id: "cs_abc123", status: "not_ready_for_payment",<br/>line_items: [...], fulfillment_options: [...]}
+        A-->>UI: "Checkout created! Choose shipping..."
+        UI-->>U: Show fulfillment options
+    end
 
-    %% Select Shipping
-    Note over UI,DB: 3. Select Shipping
-    UI->>Agent: "Standard shipping"
-    Agent->>Seller: POST /checkout_sessions/:id
-    Seller->>DB: Update session
-    DB-->>Seller: Updated
-    Seller-->>Agent: Ready for payment
-    Agent-->>UI: Show total
+    %% 3. Update Checkout
+    rect rgb(255, 250, 240)
+        Note over U,DB: Phase 3: Fulfillment Selection
+        U->>UI: "Select standard shipping"
+        UI->>A: POST /chat {message}
+        A->>S: POST /checkout_sessions/cs_abc123<br/>{fulfillment_option_id: "ship_std"}
+        S->>DB: UPDATE checkout_sessions<br/>SET fulfillment_option_id="ship_std"
+        S->>DB: Recalculate totals with shipping
+        DB-->>S: Updated session
+        S-->>A: {id: "cs_abc123", status: "ready_for_payment",<br/>totals: [...]}
+        A-->>UI: "Ready to complete! Total: $487.92"
+        UI-->>U: Show order summary
+    end
 
-    %% Complete
-    Note over UI,DB: 4. Complete Order
-    UI->>Agent: "Complete purchase"
-    Agent->>PSP: POST /delegate_payment
-    PSP-->>Agent: Payment token
-    Agent->>Seller: POST /:id/complete
-    Seller->>DB: Create order
-    DB-->>Seller: Order ID
-    Seller-->>Agent: Order confirmed
-    Agent-->>UI: Success!
+    %% 4. Payment Tokenization
+    rect rgb(255, 240, 245)
+        Note over U,DB: Phase 4: Payment Processing
+        U->>UI: "Complete purchase"
+        UI->>A: POST /chat {message}
+        A->>P: POST /agentic_commerce/delegate_payment<br/>{payment_method: {...}, allowance: {...}}
+        P-->>A: {id: "vt_mock_xyz", created: "2026-02-14T..."}
+        Note over A: Token: vt_mock_xyz
+    end
+
+    %% 5. Complete Checkout
+    rect rgb(248, 240, 255)
+        Note over U,DB: Phase 5: Order Completion
+        A->>S: POST /checkout_sessions/cs_abc123/complete<br/>{payment_data: {token: "vt_mock_xyz"}}
+        S->>DB: BEGIN TRANSACTION
+        S->>DB: INSERT INTO orders<br/>(id, checkout_session_id, total_cents)
+        S->>DB: UPDATE checkout_sessions<br/>SET status="completed"
+        S->>DB: INSERT INTO acp_action_events<br/>(intent, action, verification, execution)
+        S->>DB: COMMIT
+        DB-->>S: Order created
+        S-->>A: {status: "completed",<br/>order: {id: "order_def456", permalink_url: "..."}}
+        A->>M: Store purchase history
+        M-->>A: OK
+        A-->>UI: " Order confirmed! Order ID: order_def456"
+        UI-->>U: Show order confirmation
+    end
+
+    %% 6. Audit Trail
+    rect rgb(245, 245, 245)
+        Note over DB: Phase 6: Audit & Observability
+        DB->>DB: acp_action_events table stores:<br/>• Intent (PURCHASE)<br/>• Action (complete_checkout)<br/>• Verification (approved: true)<br/>• Execution (status: succeeded)
+    end
 ```
 
-### Ingestion Pipeline
+### Ingestion Pipeline Flow
 
 ```mermaid
 flowchart LR
-    subgraph SOURCES["Data Sources"]
-        CSV[CSV Files]
-        PG[PostgreSQL CDC]
-        API[REST API]
-        OTHER[Other Connectors]
+    %% Data sources
+    subgraph SOURCES[" Data Sources"]
+        direction TB
+        CSV["CSV Files<br/>(WANDS Dataset)"]
+        POSTGRES["Postgres CDC<br/>(Future)"]
+        API["REST API<br/>(Future)"]
     end
 
-    CSV --> Workflow[Temporal<br/>Workflow]
-    PG -.-> Workflow
-    API -.-> Workflow
-    OTHER -.-> Workflow
+    %% Temporal workflows
+    subgraph TEMPORAL_SYS["⏱️ Temporal Orchestration"]
+        direction TB
+        WF1["Workflow:<br/>IngestWANDSWorkflow"]
+        WF2["Workflow:<br/>IngestCatalogSourceWorkflow"]
+        ACT1["Activity:<br/>parse_wands_csv()"]
+        ACT2["Activity:<br/>transform_and_load_products()"]
+        ACT3["Activity:<br/>ingest_catalog_source()"]
 
-    Workflow --> Parse[Parse]
-    Parse --> Transform[Transform]
-    Transform --> QC{Quality<br/>Check}
-    QC -->|Pass| DB[(Database)]
-    QC -->|Fail| Reject[Reject]
-    DB --> Stats[Stats API]
+        WF1 --> ACT1
+        ACT1 --> ACT2
+        WF2 --> ACT3
+    end
+
+    %% Database
+    DB[("PostgreSQL<br/><br/>Tables:<br/>• products<br/>• ingestion_runs")]
+
+    %% Quality gates
+    QC["Quality Checks<br/><br/>• Min valid ratio: 90%<br/>• Max skipped: 5000<br/>• Required fields present<br/>• Price validation"]
+
+    %% Trigger
+    TRIGGER["Trigger<br/><br/>POST /admin/ingest/product-csv<br/>OR<br/>POST /admin/ingest/source"]
+
+    %% Flow
+    CSV --> ACT1
+    POSTGRES -.->|"Future"| ACT3
+    API -.->|"Future"| ACT3
+
+    TRIGGER -->|"Start workflow"| WF1
+    TRIGGER -->|"Start workflow"| WF2
+
+    ACT2 --> QC
+    ACT3 --> QC
+    QC -->|"Valid: Bulk INSERT"| DB
+    QC -->|"Invalid: Reject"| STATS["📊 Ingestion Stats<br/><br/>• total_rows<br/>• valid_rows<br/>• skipped_rows<br/>• status"]
+    DB --> STATS
+
+    STATS -->|"GET /admin/ingest/stats"| MONITOR["📈 Monitoring<br/><br/>Check ingestion success"]
+
+    %% Styling
+    classDef source fill:#e1f5ff,stroke:#0077b6,stroke-width:2px
+    classDef temporal fill:#fff3cd,stroke:#ffc107,stroke-width:2px
+    classDef database fill:#d1e7dd,stroke:#198754,stroke-width:2px
+    classDef quality fill:#f8d7da,stroke:#dc3545,stroke-width:2px
+
+    class CSV,POSTGRES,API source
+    class WF1,WF2,ACT1,ACT2,ACT3 temporal
+    class DB database
+    class QC,STATS,MONITOR quality
 ```
-
-### Key Metrics & Scale
-
-| Metric | Current | Notes |
-|--------|---------|-------|
-| **Products** | 42,994 | WANDS dataset (Wayfair) |
-| **Search Latency** | 50-100ms | PostgreSQL FTS with ranking |
-| **ACP Endpoints** | 5 | create, get, update, complete, cancel |
-| **Agent Tools** | 10 | search, details, rating, compare, simulate, checkout (5) |
-| **Supported Headers** | 7 | API-Version, Idempotency-Key, Request-Id, Authorization, X-OpenAI-Signature, Accept-Language, User-Agent |
-| **Test Coverage** | 15/15 | All ACP sandbox tests passing |
-| **Database Tables** | 7 | products, checkout_sessions, orders, acp_action_events, ingestion_runs, source_connections, source_checkpoints |
-| **Ingestion Quality** | 90%+ | Min valid ratio enforced |
-
-### Component responsibilities
-
-| Component | Path | Responsibility |
-|---|---|---|
-| **ACP framework** | `acp_framework/` | Shared ACP models (Pydantic), seller adapter contract (`ACPSellerAdapter`), payment provider primitives, router factory (`create_seller_router`), agent tools factory (`create_commerce_tools`) |
-| **Seller service** | `services/seller/main.py` | ACP checkout lifecycle (5 endpoints), product APIs (search, details, ratings, compare), ingestion trigger/admin endpoints, webhook emitter |
-| **PSP service** | `services/psp/main.py` | Delegate payment tokenization with API-version validation, idempotency enforcement, HMAC signature checks, mock or Stripe-backed |
-| **Agent service** | `services/agent/main.py` | Chat endpoint (`/chat`) over tool-enabled commerce agent (OpenAI Agents SDK), mem0 integration for cross-session memory |
-| **Pipeline worker** | `services/pipeline/worker.py` | Registers and runs Temporal workflows (CSV ingestion, source adapters) + activities (parse, transform, load) |
-| **UI** | `ui/` | Customer-facing Next.js chat interface with real-time checkout panel, product card rendering, API route proxying |
 
 ## Request flow
 
