@@ -23,6 +23,7 @@ env/
 .env
 .env.local
 .env.production
+.railway-token.txt
 
 # Testing
 .pytest_cache/

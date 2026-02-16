@@ -56,20 +56,21 @@ export default function Home() {
     const [checkout, setCheckout] = useState<CheckoutData | null>(null);
     const [acpContracts, setAcpContracts] = useState<ACPContract[]>([]);
     const [showContracts, setShowContracts] = useState(true);
-    const [userId] = useState(() => {
-        if (typeof window !== 'undefined') {
-            let id = localStorage.getItem('acp_user_id');
-            if (!id) {
-                id = `user_${Math.random().toString(36).substring(2, 11)}`;
-                localStorage.setItem('acp_user_id', id);
-            }
-            return id;
-        }
-        return 'user_default';
-    });
-    const [sessionId] = useState(() => `session_${Math.random().toString(36).substring(2, 11)}`);
+    const [userId, setUserId] = useState('user_default');
+    const [sessionId, setSessionId] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+
+    // Initialize userId and sessionId on client side only
+    useEffect(() => {
+        let id = localStorage.getItem('acp_user_id');
+        if (!id) {
+            id = `user_${Math.random().toString(36).substring(2, 11)}`;
+            localStorage.setItem('acp_user_id', id);
+        }
+        setUserId(id);
+        setSessionId(`session_${Math.random().toString(36).substring(2, 11)}`);
+    }, []);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -341,7 +342,7 @@ export default function Home() {
                                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                                     <span style={{ fontWeight: 600 }}>{contract.intent}</span>
                                     <span style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>
-                                        {new Date(contract.timestamp).toLocaleTimeString()}
+                                        {typeof window !== 'undefined' ? new Date(contract.timestamp).toLocaleTimeString() : ''}
                                     </span>
                                 </div>
                                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>

@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["python312", "uv"]
+nixPkgs = ["python312"]
 
 [phases.install]
-cmds = ["uv sync --frozen"]
+cmds = [
+    "pip install hatchling",
+    "pip install -e ."
+]
 
 [start]
-cmd = "uv run uvicorn services.seller.main:app --host 0.0.0.0 --port $PORT"
+cmd = "python -m uvicorn services.seller.main:app --host 0.0.0.0 --port $PORT"
